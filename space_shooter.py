@@ -1,6 +1,9 @@
-import arcade 
+import arcade
 import random
 import math
+import json
+import os
+
 SCREEN_WIDTH = 800
 SCREEN_HEIGHT = 600
 SCREEN_TITLE = "Space Hero Shooter"
@@ -11,11 +14,27 @@ BULLET_SCALING = 0.8
 
 ENEMY_COUNT = 8
 BULLET_SPEED = 10
-ENEMY_SPEED = 2
+ENEMY_BASE_SPEED = 2
 PLAYER_SPEED = 5
 PLAYER_LIVES = 3
 
+SCORE_FILE = "high_score.json"
 
+
+# ------------------ Utility ------------------
+def load_high_score():
+    if os.path.exists(SCORE_FILE):
+        with open(SCORE_FILE, "r") as f:
+            return json.load(f).get("high_score", 0)
+    return 0
+
+
+def save_high_score(score):
+    with open(SCORE_FILE, "w") as f:
+        json.dump({"high_score": score}, f)
+
+
+# ------------------ Sprites ------------------
 class Bullet(arcade.Sprite):
     def update(self):
         self.center_y += BULLET_SPEED
@@ -27,12 +46,10 @@ class Enemy(arcade.Sprite):
     def __init__(self, image, scale):
         super().__init__(image, scale)
         self.angle_offset = random.uniform(0, 6.28)
+        self.speed = ENEMY_BASE_SPEED
 
     def update(self):
-        # Move downward
-        self.center_y -= ENEMY_SPEED
-
-        # Zig-zag movement
+        self.center_y -= self.speed
         self.center_x += math.sin(self.angle_offset) * 2
         self.angle_offset += 0.05
 
@@ -44,24 +61,138 @@ class Enemy(arcade.Sprite):
         self.center_x = random.randrange(50, SCREEN_WIDTH - 50)
 
 
-class Explosion(arcade.Sprite):
-    def __init__(self, x, y):
-        super().__init__(
-            ":resources:images/spritesheets/explosion.png",
-            scale=0.5,
-            center_x=x,
-            center_y=y
-        )
-        self.textures = arcade.load_spritesheet(
-            ":resources:images/spritesheets/explosion.png",
-            256, 256, 16, 60
-        )
-        self.current_texture = 0
+# ------------------ Game ------------------
+class MyGame(arcade.Window):
+    def __init__(self):
+        super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_TITLE)
 
-    def update(self):
-        self.current_texture += 1
-        if self.current_texture < len(self.textures):
-            self.texture = self.textures[self.current_texture]
+        self.player = None
+        self.enemy_list = arcade.SpriteList()
+        self.bullet_list = arcade.SpriteList()
+
+        self.lives = PLAYER_LIVES
+        self.score = 0
+        self.high_score = load_high_score()
+
+        self.paused = False
+        self.game_over = False
+        self.enemy_speed = ENEMY_BASE_SPEED
+
+    def setup(self):
+        self.player = arcade.Sprite(
+            ":resources:images/space_shooter/playerShip1_blue.png",
+            PLAYER_SCALING
+        )
+        self.player.center_x = SCREEN_WIDTH // 2
+        self.player.center_y = 60
+
+        self.enemy_list.clear()
+        self.bullet_list.clear()
+
+        self.lives = PLAYER_LIVES
+        self.score = 0
+        self.game_over = False
+        self.paused = False
+        self.enemy_speed = ENEMY_BASE_SPEED
+
+        for _ in range(ENEMY_COUNT):
+            self.spawn_enemy()
+
+    def spawn_enemy(self):
+        enemy = Enemy(
+            ":resources:images/space_shooter/playerShip1_red.png",
+            ENEMY_SCALING
+        )
+        enemy.speed = self.enemy_speed
+        enemy.reset_pos()
+        self.enemy_list.append(enemy)
+
+    def on_draw(self):
+        arcade.start_render()
+
+        self.player.draw()
+        self.enemy_list.draw()
+        self.bullet_list.draw()
+
+        # UI
+        arcade.draw_text(f"Score: {self.score}", 10, 570, arcade.color.WHITE, 16)
+        arcade.draw_text(f"Lives: {self.lives}", 10, 545, arcade.color.WHITE, 16)
+        arcade.draw_text(f"High Score: {self.high_score}", 600, 570, arcade.color.YELLOW, 14)
+
+        if self.paused:
+            arcade.draw_text("PAUSED", 350, 300, arcade.color.YELLOW, 30)
+
+        if self.game_over:
+            arcade.draw_text("GAME OVER", 300, 320, arcade.color.RED, 36)
+            arcade.draw_text("Press R to Restart", 285, 280, arcade.color.WHITE, 18)
+
+    def on_update(self, dt):
+        if self.paused or self.game_over:
+            return
+
+        # Player movement
+        self.player.center_x += self.player.change_x
+        self.player.left = max(self.player.left, 0)
+        self.player.right = min(self.player.right, SCREEN_WIDTH)
+
+        self.bullet_list.update()
+        self.enemy_list.update()
+
+        # Bullet → Enemy
+        for bullet in self.bullet_list:
+            enemies_hit = arcade.check_for_collision_with_list(
+                bullet, self.enemy_list
+            )
+            for enemy in enemies_hit:
+                bullet.remove_from_sprite_lists()
+                enemy.remove_from_sprite_lists()
+
+                self.score += 10
+                self.enemy_speed += 0.02  # difficulty scaling
+                self.spawn_enemy()
+
+        # Enemy → Player
+        for enemy in arcade.check_for_collision_with_list(
+            self.player, self.enemy_list
+        ):
+            enemy.remove_from_sprite_lists()
+            self.lives -= 1
+            self.spawn_enemy()
+
+            if self.lives <= 0:
+                self.game_over = True
+                if self.score > self.high_score:
+                    self.high_score = self.score
+                    save_high_score(self.high_score)
+
+    def on_key_press(self, key, modifiers):
+        if key == arcade.key.LEFT:
+            self.player.change_x = -PLAYER_SPEED
+        elif key == arcade.key.RIGHT:
+            self.player.change_x = PLAYER_SPEED
+        elif key == arcade.key.SPACE and not self.game_over:
+            bullet = Bullet(
+                ":resources:images/space_shooter/laserBlue01.png",
+                BULLET_SCALING
+            )
+            bullet.center_x = self.player.center_x
+            bullet.bottom = self.player.top
+            self.bullet_list.append(bullet)
+        elif key == arcade.key.P:
+            self.paused = not self.paused
+        elif key == arcade.key.R and self.game_over:
+            self.setup()
+
+    def on_key_release(self, key, modifiers):
+        if key in (arcade.key.LEFT, arcade.key.RIGHT):
+            self.player.change_x = 0
+
+
+# ------------------ Run ------------------
+if __name__ == "__main__":
+    game = MyGame()
+    game.setup()
+    arcade.run()            self.texture = self.textures[self.current_texture]
         else:
             self.remove_from_sprite_lists()
 
